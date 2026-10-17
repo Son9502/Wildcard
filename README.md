@@ -2,7 +2,7 @@
 
 A Persona-Framework personal agent, built on two layers that mirror the two loops the Persona games run on: an always-on protagonist layer for daily life, and a roster of specialized personas summoned for specific tasks.
 
-This is v2 of the scope: in v1, shared memory across personas was invisible backend plumbing. Here, that shared layer is promoted to a first-class, visible feature — useful even on days no persona is summoned at all.
+On top of those two core layers sits a Persona-native gamification layer — Protagonist Status, Arcana XP, Calendar streak, Arcs, Requests, Activities, Buffs, and Status Effects — porting vocabulary and systems directly from the games so the terminology is consistent throughout.
 
 ## Getting Started
 
@@ -10,107 +10,134 @@ Expo (React Native + web) + TypeScript, backed by Supabase.
 
 ```bash
 npm install
-cp .env.example .env   # fill in your Supabase project URL + anon key
+cp .env.example .env   # fill in your Supabase URL, anon key, and Anthropic key
 npm run web             # or: npm run ios / npm run android
 ```
 
-Run [supabase/schema.sql](supabase/schema.sql) in the Supabase SQL Editor to create the protagonist-layer tables (`tasks`, `schedule_events`, `confidants`, `event_log`, `persona_progression`) with per-user RLS.
+Run [supabase/schema.sql](supabase/schema.sql) in the Supabase SQL Editor to create the core tables with per-user RLS. Additional migration files are listed in the [SQL Migrations](#sql-migrations) section below.
 
 ### Layout
 
 ```
-App.tsx                 Tab shell wiring the three Layer-1 screens together
-src/screens/             Home (schedule + tasks), Confidants, Chat (stub — see below)
-src/data/                Protagonist data store: tasks, schedule, confidants, event log
-src/personas/registry.ts Layer-2 persona definitions (arcana, domain, system prompt, rank gating)
-src/progression/         Rank/XP derived from event_log completions
-src/router/handoff.ts    Builds persona session context from a task, writes completions back
-src/lib/supabase.ts      Supabase client
-supabase/schema.sql      Full protagonist-layer schema + RLS policies
+App.tsx                          Tab shell + auth gate + PASSWORD_RECOVERY handler
+src/screens/
+  AuthScreen.tsx                 Sign-in / sign-up / forgot-password (three screen states)
+  ResetPasswordScreen.tsx        Shown on PASSWORD_RECOVERY event; updates password
+  HomeScreen.tsx                 Today's schedule, open tasks, overdue Confidant nudges
+  ConfidantsScreen.tsx           Relationship list; opens ConfidantDetailScreen as slide modal
+  ConfidantDetailScreen.tsx      Per-confidant: log-contact, follow-ups, queued questions, delete
+  ChatScreen.tsx                 Protagonist agent chat (Anthropic API, full history, Enter-to-submit on web)
+src/data/
+  tasks.ts                       listTasks / createTask / completeTask / deleteTask
+  schedule.ts                    listTodaysEvents / createEvent
+  confidants.ts                  listConfidants / createConfidant / logContact / updateFollowUps / updateQuestionsQueued / deleteConfidant / listOverdueConfidants
+  eventLog.ts                    logEvent (central write for all completion events)
+src/personas/registry.ts         All persona definitions (arcana, domain, system prompt, rank gating)
+src/progression/index.ts         Rank / XP math derived from event_log completions
+src/router/handoff.ts            Builds persona session context from a task; writes completions back
+src/lib/supabase.ts              Supabase client (detectSessionInUrl: Platform.OS === 'web')
+src/lib/anthropic.ts             sendChatMessage — proxies via Supabase Edge Function (claude-sonnet-5, handles extended thinking blocks)
+src/types/index.ts               Shared TypeScript types + EventLogType union
+supabase/schema.sql              Core schema: tasks, schedule_events, confidants, event_log, persona_progression
+supabase/functions/chat/index.ts Server-side Anthropic API proxy (avoids browser CORS; reads ANTHROPIC_API_KEY from Supabase secret)
 ```
-
-This covers build-order step 1 (protagonist core: schedule, tasks, a stubbed agent chat) and lays the plumbing for step 2 (Confidant Log, already scaffolded) and step 3 (first persona hand-off — `src/router/handoff.ts` has the shape, but `ChatScreen` and persona sessions aren't wired to a real model yet).
-
-**Not yet wired:** auth (screens assume a logged-in `auth.uid()`), an actual LLM call in `ChatScreen`/persona sessions, and a real navigation library (the tab bar in `App.tsx` is local state, not `react-navigation`).
 
 ## Concept
 
-- **Layer 1 — Protagonist layer**: the daily-life loop. Schedule, tasks, a Confidant-style relationship log, and a central event log that feeds persona sessions with context and gets written back to when a session completes something.
-- **Layer 2 — Persona roster**: the task-specific loop. Specialized personas (arcana-mapped) summoned from a task, pre-loaded with context, each with its own domain, rank, and eventual evolution.
+### Layer 1 — Protagonist Layer
 
-Rank now increments from real completions logged centrally in the protagonist layer's event log, rather than from isolated per-persona counters.
+Always on; what the user opens first. Owns the daily-life loop:
 
-## Form Factor
+- **Schedule** — today's events
+- **Task list** — open tasks with optional persona assignment; Requests (is_request = true) route to a mandatory persona and award double XP
+- **Confidant Log** — per-person notes: last-contact date, follow-ups owed, queued questions; overdue nudges surface in the home screen
+- **Central event log** — single source of truth; both feeds persona sessions with context and gets written back to on completion
 
-- **Primary**: cross-platform app (mobile + web), not a browser extension. The protagonist layer needs to be checked every morning (schedule, tasks, overdue check-ins), which needs notifications and easy daily access.
-- **Stack note**: same shape of build as the Film Log project — Expo/React Native + a backend, offline-first with cloud sync. Reusing that stack is worth considering purely for build efficiency.
-- **Secondary (later)**: a lightweight browser extension for quick capture — jot a task, log a note, or summon a persona without leaving what you're doing. Not where the product lives; an accelerant added after the core app works.
+A single, un-themed protagonist agent handles the chat — no arcana skin — because it needs to be fast, reliable, and useful standalone from day one.
 
-## Relationship to the AI Flight Planning Assistant
+### Layer 2 — Persona Roster
 
-Keep it as a separate product, or house it as a static, non-rank-gated Justice persona if a single platform is preferred. Safety-adjacent domains shouldn't have capability that scales with a usage-based trust meter.
-
-## Two-Layer Architecture
-
-### Layer 1 — Protagonist Layer (daily-life loop)
-
-Always on; what the user opens first. Owns:
-
-- Daily / weekly schedule and task list
-- Confidant Log — per-person relationship notes: questions to ask, last-contact date, follow-ups owed
-- A central event log that both feeds persona sessions with context and gets written back to on completion
-
-A single, un-themed agent — no arcana skin — because it needs to be reliable, fast to check, and useful standalone from day one.
-
-### Layer 2 — Persona Roster (task-specific loop)
-
-Summoned from inside the protagonist layer, not opened cold. Tapping a task ("draft the Q3 proposal") opens the relevant persona pre-loaded with context the protagonist layer already has (deadline, prior drafts, related notes).
-
-Arcana mapping (unchanged in concept from v1):
+Summoned from inside the protagonist layer, not opened cold. Tapping a task opens the matched persona pre-loaded with context the protagonist layer already has (deadline, prior completions, related notes). Session ends → task marked done, event logged, persona XP ticks up.
 
 | Arcana | Domain |
 |---|---|
 | Magician | Coding |
 | Empress | Creative / writing |
-| Chariot | Task execution |
+| Chariot | Execution & discipline |
 | Hierophant | Research |
-| Justice | Rules / regulated advisory (static, non-rank-gated) |
 | Hermit | Personal organization |
+| Justice | Rules / regulated advisory (static, non-rank-gated) |
 
-**Example day**: open the app, see today's schedule plus a nudge ("haven't talked to [contact] in two weeks — question queued: ask about their trip"). Tap a task, it opens the persona suited to it with context already loaded. Session ends, the task is marked done and the protagonist layer logs it; the persona's rank ticks up from that real completion.
+### Layer 3 — Gamification (Persona-Native)
+
+All vocabulary matches the games.
+
+| Concept | What it does |
+|---|---|
+| **Protagonist Status** | The user's own stat sheet — overall level, Arcana XP bars, Calendar streak |
+| **Arcana** | Five task categories (Power, Thinking, Spirit, Hustle, Social) that route to a persona |
+| **Calendar** | Consecutive-day streak tracked via daily `calendar_day` event log entries |
+| **Activities** | Real-life free-time blocks (Reading, Training, Coding…) that award Arcana XP with a single tap; 4-hour cooldown per type |
+| **Arcs** | Multi-step goals spanning several days; Confidant Arc when tied to a relationship |
+| **Requests** | Single-sitting harder tasks (Mementos-style); mandatory persona, double XP |
+| **Buffs** | Positive milestone unlocks (first task, first arc, 7-day Calendar streak, first evolution…) |
+| **Status Effects** | Named, recoverable setbacks — "Fatigued" on streak break, "Dormant — [Arcana]" on 7-day inactivity; framed as resolvable exactly as the games do |
+| **Velvet Room** | Central hub housing Protagonist Status, Persona Roster, and Compendium |
+
+**Example day**: open the app, see today's schedule plus a nudge ("haven't talked to [contact] in two weeks"). Tap a Chariot task → PersonaSessionScreen opens pre-loaded with context. Session ends → task done, event logged, Chariot XP ticks up, Power Arcana XP on Protagonist Status increments. Log "Training" in Activities → Power Arcana gets +15 XP and clears a "Dormant — Power" Status Effect if one was active.
 
 ## Build Order
 
-1. **Protagonist layer core** — schedule, task list, and a basic (non-personified) agent chat. No personas yet. Usable as a daily driver on its own.
-2. **Confidant Log** — relationship tracking layered onto the protagonist core.
-3. **First persona** (Magician or Chariot) summoned from a task, pulling context from the protagonist layer — proves the hand-off between layers works.
-4. **Additional personas** + centralized rank tracking.
-5. **Evolution mechanic** as a proof of concept on one persona.
-6. **Fusion.**
-7. **Justice / flight-planning persona** — last, independent of this timeline.
-
-This reorders the v1 plan, which started directly with a single persona. Building the protagonist layer first means every subsequent persona plugs into a shared history that already exists, and the product is useful before the persona-roster complexity is added.
-
-## Feasibility & Effort
-
-| Layer | Difficulty | Notes |
+| # | Phase | Status |
 |---|---|---|
-| Protagonist layer core (schedule, tasks, chat) | Low–Moderate | Standard CRUD + agent chat, similar shape to Film Log's data patterns. First milestone, not an afterthought. |
-| Confidant Log (relationship tracking) | Low | Structured notes tied to contacts; no new architecture beyond the protagonist layer's data model. |
-| First persona hand-off from a task | Moderate | The interesting engineering: context needs to flow from the protagonist layer into a persona session and back out again. |
-| Additional personas + rank tracking | Low–Moderate | Mostly repeating the pattern from the first persona once it works. |
-| Evolution mechanic | Moderate | Tiered prompts/permissions are easy; detecting a genuine "breakthrough" task reliably needs a heuristic or manual flag. |
-| Fusion | Moderate–High | Dynamic composition of two personas' prompts and tool permissions — real engineering, not configuration. |
-| Justice persona (aviation data) | Moderate–High | Independent of this framework; same complexity as the standalone flight-planning brief. |
+| 1 | **Protagonist Layer Core** — auth, schedule, tasks, Chat → Anthropic API, react-navigation | Complete |
+| 2 | **Confidant Log** — add confidant form, log-contact, detail screen, overdue nudges | Complete |
+| 3 | **First Persona Hand-Off** — task detail → persona picker → PersonaSessionScreen | Scaffolded |
+| 4 | **Velvet Room** — Roster (10-slot cap), Compendium (release / re-summon), Justice always-on | Not started |
+| 5 | **Evolution** — rank threshold or breakthrough flag triggers evolved system prompt | Not started |
+| 6 | **Fusion** — compose two personas; both must be rank 3+ | Not started |
+| 7 | **Justice Persona** — disclaimer banner, source citations, non-rank-gated | Scaffolded |
+| 8 | **Protagonist Status & Calendar** — ProtagonistStatusScreen, Arcana XP breakdown, Calendar streak | Not started |
+| 9 | **Arcs & Requests** — arcs + arc_stages tables, ArcScreen, ArcDetailScreen, Confidant Arc variant | Not started |
+| 10 | **Activities, Buffs & Status Effects** — 15 Activities, milestone Buffs gallery, Status Effect engine | Not started |
+| 11 | **Expo Push Notifications** — Calendar reminders, Confidant nudges, Status Effect alerts, Arc deadlines | Not started |
 
-**Bottom line**: a usable protagonist-layer MVP (schedule, tasks, Confidant Log, no personas) is roughly 2–3 weeks of part-time work. Adding the first persona hand-off brings a genuinely differentiated MVP to about 3–5 weeks. Evolution, fusion, and a polished summon UI extend that to one to two months beyond that. The Justice/flight-planning persona stays scoped and built independently of this timeline.
+## SQL Migrations
 
-## Technical Architecture Components
+| File | Creates / Alters | Phase |
+|---|---|---|
+| `supabase/schema.sql` | tasks, schedule_events, confidants, event_log, persona_progression + RLS | 1 |
+| `supabase/phase4-compendium.sql` | ALTER persona_progression: status, last_context, released_at | 4 |
+| `supabase/phase5-tasks.sql` | ALTER tasks: is_breakthrough | 5 |
+| `supabase/phase9-arcs.sql` | CREATE arcs, arc_stages; ALTER tasks: is_request | 9 |
+| `supabase/phase10-gamification.sql` | CREATE buffs, status_effects | 10 |
+| `supabase/phase11-notifications.sql` | CREATE user_settings (push_token, notification prefs) | 11 |
+
+## Supabase Configuration
+
+- **Email auth**: enabled (Supabase Dashboard → Authentication → Providers → Email)
+- **Site URL**: your Expo web origin (e.g. `http://localhost:8081`)
+- **Redirect URL**: same origin — Supabase appends `#access_token=...&type=recovery` to it on password reset
+- **`detectSessionInUrl`**: set to `Platform.OS === 'web'` in `src/lib/supabase.ts` so the `PASSWORD_RECOVERY` event fires on web but doesn't cause issues on native
+
+## Technical Architecture
 
 | Component | Role |
 |---|---|
-| Protagonist data store | Schedule, tasks, Confidant Log, and the central event log — the single source of truth both layers read and write. |
-| Persona modules | Per-arcana system prompt, tool-permission set, and rank-tier variants. |
-| Progression store | Per-user, per-persona rank/XP, evolution flags, fusion history — sourced from the protagonist event log. |
-| Router / hand-off layer | Passes context from a tapped task into the right persona session, and writes results back to the protagonist layer on completion. |
-| Summon UI | Persona selection screen, arcana card visuals, evolution/fusion moments — presentation layer only. |
+| Protagonist data store | Schedule, tasks, Confidant Log, and the central event log — single source of truth both layers read and write |
+| Persona modules | Per-arcana system prompt, tool-permission set, and rank-tier variants in `src/personas/registry.ts` |
+| Progression store | Per-user, per-persona rank/XP, evolution flags — sourced from the protagonist event log |
+| Router / hand-off layer | Passes context from a tapped task into the right persona session; writes results back on completion |
+| Velvet Room | Persona selection, Roster, Compendium, and Protagonist Status — presentation layer for both persona layers |
+| Protagonist Status engine | Arcana XP grouped from persona_progression; Calendar streak from consecutive `calendar_day` event_log entries |
+| Gamification engine | Activity cooldown checks, Buff milestone detection, Status Effect auto-apply/clear logic |
+
+## Relationship to the AI Flight Planning Assistant
+
+House it as the static, non-rank-gated Justice persona. Safety-adjacent domains should not have capability that scales with a usage-based trust meter — Justice is always summoned at the same tier.
+
+## Form Factor
+
+- **Primary**: cross-platform app (iOS + Android + web via Expo), not a browser extension. The protagonist layer needs to be checked every morning, which needs native notifications and easy daily access.
+- **Notifications**: Expo's native notification stack throughout — no third-party service.
+- **Secondary (later)**: a lightweight browser extension for quick capture — jot a task, log a note, or summon a persona without leaving what you're doing. An accelerant added after the core app works.
