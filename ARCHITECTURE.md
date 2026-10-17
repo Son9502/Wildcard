@@ -26,6 +26,8 @@ Layer 2 is never opened cold — it is summoned from inside Layer 1. Tapping a t
 
 Layer 3 is a presentation/rule layer on top of Layers 1 and 2. Its data is derived from the central event log and the `persona_progression` table.
 
+> This document describes the code as it is today. The planned MVP architecture (pages and blocks, a server-side agent tool loop, per-persona tool permissions, and database-computed XP and streaks) is in [MVP.md](MVP.md).
+
 ---
 
 ## 2. Module Map
@@ -136,7 +138,7 @@ All tables live in `public` schema with Row Level Security enabled. Every policy
 | `event_log` | `id, user_id, type, persona_id, task_id, confidant_id, payload JSONB` | 1 |
 | `persona_progression` | `user_id, persona_id, rank, xp, evolved_at` · PK: `(user_id, persona_id)` | 1 |
 
-Planned future tables (migration files in `supabase/`):
+Planned future tables (migration files not yet written — each will be added to `supabase/` with its phase):
 
 | Table | Migration file | Phase |
 |---|---|---|
