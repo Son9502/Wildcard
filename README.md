@@ -88,11 +88,13 @@ All vocabulary matches the games.
 
 ## Build Order
 
+> **MVP:** the near-term target is a gamified, Notion-style workspace with an agent that can act and a working progression loop. See [MVP.md](MVP.md) for scope, data model, milestones and the acceptance demo. The phases below are the long-term roadmap.
+
 | # | Phase | Status |
 |---|---|---|
 | 1 | **Protagonist Layer Core** — auth, schedule, tasks, Chat → Anthropic API, react-navigation | Complete |
 | 2 | **Confidant Log** — add confidant form, log-contact, detail screen, overdue nudges | Complete |
-| 3 | **First Persona Hand-Off** — task detail → persona picker → PersonaSessionScreen | Scaffolded |
+| 3 | **First Persona Hand-Off** — task detail → persona picker → PersonaSessionScreen | Scaffolded (hand-off functions written; no screen yet) |
 | 4 | **Velvet Room** — Roster (10-slot cap), Compendium (release / re-summon), Justice always-on | Not started |
 | 5 | **Evolution** — rank threshold or breakthrough flag triggers evolved system prompt | Not started |
 | 6 | **Fusion** — compose two personas; both must be rank 3+ | Not started |
@@ -103,6 +105,8 @@ All vocabulary matches the games.
 | 11 | **Expo Push Notifications** — Calendar reminders, Confidant nudges, Status Effect alerts, Arc deadlines | Not started |
 
 ## SQL Migrations
+
+Only `supabase/schema.sql` exists today; the other files below are planned and will be added with their phase.
 
 | File | Creates / Alters | Phase |
 |---|---|---|
