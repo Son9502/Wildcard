@@ -13,11 +13,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { listTasks, createTask, completeTask } from '../data/tasks';
+import { supabase } from '../lib/supabase';
+import { listTasks, createTask, completeTask, deleteTask } from '../data/tasks';
 import { listTodaysEvents, createEvent } from '../data/schedule';
+import { listOverdueConfidants } from '../data/confidants';
 import { logEvent } from '../data/eventLog';
 import { COLORS } from '../constants/colors';
-import type { Task, ScheduleEvent } from '../types';
+import type { Task, ScheduleEvent, Confidant } from '../types';
 
 function formatDate(): string {
   return new Date().toLocaleDateString(undefined, {
@@ -58,14 +60,21 @@ function parseTime(s: string): string {
 export default function HomeScreen() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
+  const [overdue, setOverdue] = useState<Confidant[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Task creation modal
   const [taskModal, setTaskModal] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDue, setTaskDue] = useState('');
   const [taskBusy, setTaskBusy] = useState(false);
 
+  // Task detail modal
+  const [detailTask, setDetailTask] = useState<Task | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+
+  // Event creation modal
   const [eventModal, setEventModal] = useState(false);
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('');
@@ -74,9 +83,10 @@ export default function HomeScreen() {
   const load = useCallback(async () => {
     try {
       setError(null);
-      const [t, e] = await Promise.all([listTasks(), listTodaysEvents()]);
+      const [t, e, od] = await Promise.all([listTasks(), listTodaysEvents(), listOverdueConfidants()]);
       setTasks(t.filter((x) => !x.completedAt));
       setEvents(e);
+      setOverdue(od);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -93,12 +103,31 @@ export default function HomeScreen() {
   }, [load]);
 
   async function handleCompleteTask(task: Task) {
+    setDetailBusy(true);
     try {
       await completeTask(task.id);
-      await logEvent({ type: 'task_completed', taskId: task.id });
+      // Update UI immediately after the DB write succeeds.
+      // logEvent is best-effort — a failure there shouldn't keep the task on screen.
       setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      setDetailTask(null);
+      logEvent({ type: 'task_completed', taskId: task.id }).catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailBusy(false);
+    }
+  }
+
+  async function handleDeleteTask(task: Task) {
+    setDetailBusy(true);
+    try {
+      await deleteTask(task.id);
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      setDetailTask(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailBusy(false);
     }
   }
 
@@ -154,11 +183,21 @@ export default function HomeScreen() {
     setEventTime('');
   }
 
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+  }
+
   return (
     <SafeAreaView style={s.container} edges={['top']}>
+      {/* ── Page header ── */}
       <View style={s.pageHeader}>
-        <Text style={s.heading}>Today</Text>
-        <Text style={s.date}>{formatDate()}</Text>
+        <View>
+          <Text style={s.heading}>Today</Text>
+          <Text style={s.date}>{formatDate()}</Text>
+        </View>
+        <TouchableOpacity style={s.signOutBtn} onPress={handleSignOut}>
+          <Text style={s.signOutText}>Sign out</Text>
+        </TouchableOpacity>
       </View>
 
       {error ? <Text style={s.errorBanner}>{error}</Text> : null}
@@ -174,6 +213,28 @@ export default function HomeScreen() {
           />
         }
       >
+        {/* ── Overdue check-ins ── */}
+        {overdue.length > 0 && (
+          <View style={s.nudgeCard}>
+            <Text style={s.nudgeLabel}>
+              {overdue.length === 1 ? 'Overdue check-in' : `${overdue.length} overdue check-ins`}
+            </Text>
+            {overdue.map((c) => (
+              <View key={c.id} style={s.nudgeRow}>
+                <View style={s.nudgeDot} />
+                <View style={s.nudgeBody}>
+                  <Text style={s.nudgeName}>{c.name}</Text>
+                  {c.questionsQueued.length > 0 && (
+                    <Text style={s.nudgeQuestion} numberOfLines={1}>
+                      Ask: {c.questionsQueued[0]}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* ── Schedule ── */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionLabel}>Schedule</Text>
@@ -203,7 +264,7 @@ export default function HomeScreen() {
             <TouchableOpacity
               key={task.id}
               style={s.taskRow}
-              onPress={() => handleCompleteTask(task)}
+              onPress={() => setDetailTask(task)}
               activeOpacity={0.55}
             >
               <View style={s.taskCircle} />
@@ -213,6 +274,7 @@ export default function HomeScreen() {
                   <Text style={s.taskDue}>Due {formatDue(task.dueAt)}</Text>
                 )}
               </View>
+              <Text style={s.taskChevron}>›</Text>
             </TouchableOpacity>
           ))
         )}
@@ -223,7 +285,66 @@ export default function HomeScreen() {
         <Text style={s.fabText}>+</Text>
       </TouchableOpacity>
 
-      {/* ── Task Modal ── */}
+      {/* ── Task Detail Modal ── */}
+      <Modal
+        visible={!!detailTask}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDetailTask(null)}
+      >
+        <View style={s.overlay}>
+          <View style={s.sheet}>
+            <View style={s.sheetHandle} />
+
+            {detailTask && (
+              <>
+                <Text style={s.sheetTitle} numberOfLines={2}>
+                  {detailTask.title}
+                </Text>
+                {detailTask.dueAt && (
+                  <Text style={s.detailDue}>Due {formatDue(detailTask.dueAt)}</Text>
+                )}
+
+                <View style={s.detailStatus}>
+                  <View style={s.statusDot} />
+                  <Text style={s.statusText}>Open</Text>
+                </View>
+
+                <View style={s.sheetActions}>
+                  <TouchableOpacity
+                    style={s.deleteBtn}
+                    onPress={() => handleDeleteTask(detailTask)}
+                    disabled={detailBusy}
+                  >
+                    {detailBusy ? (
+                      <ActivityIndicator color={COLORS.error} />
+                    ) : (
+                      <Text style={s.deleteText}>Delete</Text>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={s.confirmBtn}
+                    onPress={() => handleCompleteTask(detailTask)}
+                    disabled={detailBusy}
+                  >
+                    {detailBusy ? (
+                      <ActivityIndicator color={COLORS.bg} />
+                    ) : (
+                      <Text style={s.confirmText}>Mark Complete</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity style={s.cancelBtn} onPress={() => setDetailTask(null)}>
+                  <Text style={s.cancelText}>Close</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Task Creation Modal ── */}
       <Modal
         visible={taskModal}
         transparent
@@ -235,6 +356,7 @@ export default function HomeScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <View style={s.sheet}>
+            <View style={s.sheetHandle} />
             <Text style={s.sheetTitle}>New Task</Text>
             <TextInput
               style={s.sheetInput}
@@ -273,7 +395,7 @@ export default function HomeScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* ── Event Modal ── */}
+      {/* ── Event Creation Modal ── */}
       <Modal
         visible={eventModal}
         transparent
@@ -285,6 +407,7 @@ export default function HomeScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <View style={s.sheet}>
+            <View style={s.sheetHandle} />
             <Text style={s.sheetTitle}>New Event</Text>
             <TextInput
               style={s.sheetInput}
@@ -333,6 +456,9 @@ const s = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
   },
   heading: {
     fontSize: 26,
@@ -341,6 +467,8 @@ const s = StyleSheet.create({
     letterSpacing: 0.3,
   },
   date: { fontSize: 13, color: COLORS.textMuted, marginTop: 2 },
+  signOutBtn: { paddingTop: 4 },
+  signOutText: { fontSize: 13, color: COLORS.textDim },
   errorBanner: {
     color: COLORS.error,
     fontSize: 12,
@@ -382,9 +510,9 @@ const s = StyleSheet.create({
   eventTitle: { fontSize: 15, color: COLORS.text, flex: 1 },
   taskRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
@@ -394,11 +522,11 @@ const s = StyleSheet.create({
     borderRadius: 9,
     borderWidth: 1.5,
     borderColor: COLORS.textDim,
-    marginTop: 2,
   },
   taskBody: { flex: 1 },
   taskTitle: { fontSize: 15, color: COLORS.text, lineHeight: 21 },
   taskDue: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
+  taskChevron: { fontSize: 20, color: COLORS.textDim, lineHeight: 22 },
   fab: {
     position: 'absolute',
     bottom: 24,
@@ -426,15 +554,42 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: 12,
     paddingBottom: 36,
   },
+  sheetHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
   sheetTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '600',
     color: COLORS.text,
+    marginBottom: 6,
+    lineHeight: 24,
+  },
+  detailDue: {
+    fontSize: 13,
+    color: COLORS.textMuted,
     marginBottom: 16,
   },
+  detailStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 24,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
+  },
+  statusText: { fontSize: 13, color: COLORS.accent },
   sheetInput: {
     backgroundColor: COLORS.bgCard,
     borderWidth: 1,
@@ -448,7 +603,7 @@ const s = StyleSheet.create({
   sheetActions: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 6,
+    marginBottom: 10,
   },
   cancelBtn: {
     flex: 1,
@@ -458,6 +613,14 @@ const s = StyleSheet.create({
     borderColor: COLORS.border,
   },
   cancelText: { fontSize: 14, color: COLORS.textMuted },
+  deleteBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.error,
+  },
+  deleteText: { fontSize: 14, color: COLORS.error },
   confirmBtn: {
     flex: 2,
     paddingVertical: 13,
@@ -465,4 +628,32 @@ const s = StyleSheet.create({
     backgroundColor: COLORS.accent,
   },
   confirmText: { fontSize: 14, fontWeight: '600', color: COLORS.bg },
+  nudgeCard: {
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    backgroundColor: 'rgba(224,85,85,0.05)',
+    padding: 14,
+    marginBottom: 24,
+    gap: 8,
+  },
+  nudgeLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: COLORS.error,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  nudgeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  nudgeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: COLORS.error,
+    marginTop: 6,
+    flexShrink: 0,
+  },
+  nudgeBody: { flex: 1 },
+  nudgeName: { fontSize: 13, color: COLORS.text, fontWeight: '500' },
+  nudgeQuestion: { fontSize: 12, color: COLORS.textMuted, marginTop: 1 },
 });

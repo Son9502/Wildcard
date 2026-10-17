@@ -11,6 +11,7 @@ import AuthScreen from './src/screens/AuthScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import ConfidantsScreen from './src/screens/ConfidantsScreen';
 import ChatScreen from './src/screens/ChatScreen';
+import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 
 type TabParamList = {
   Today: undefined;
@@ -23,6 +24,7 @@ const Tab = createBottomTabNavigator<TabParamList>();
 export default function App() {
   // undefined = loading, null = signed out, Session = signed in
   const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [recovering, setRecovering] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -31,8 +33,14 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setRecovering(true);
+        setSession(null);
+      } else {
+        setRecovering(false);
+        setSession(session);
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -44,6 +52,15 @@ export default function App() {
         <ActivityIndicator color={COLORS.accent} size="large" />
         <StatusBar style="light" />
       </View>
+    );
+  }
+
+  if (recovering) {
+    return (
+      <SafeAreaProvider>
+        <ResetPasswordScreen onDone={() => setRecovering(false)} />
+        <StatusBar style="light" />
+      </SafeAreaProvider>
     );
   }
 

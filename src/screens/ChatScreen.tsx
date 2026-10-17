@@ -89,12 +89,18 @@ export default function ChatScreen() {
             style={s.input}
             value={draft}
             onChangeText={setDraft}
-            placeholder="Message…"
+            placeholder="Message… (Shift+Enter for newline)"
             placeholderTextColor={COLORS.textDim}
             multiline
             returnKeyType="send"
             blurOnSubmit={false}
             onSubmitEditing={submit}
+            onKeyPress={(e: any) => {
+              if (Platform.OS === 'web' && e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
+                e.nativeEvent.preventDefault();
+                submit();
+              }
+            }}
           />
           <TouchableOpacity style={s.sendBtn} onPress={submit} disabled={sending}>
             <Text style={s.sendIcon}>↑</Text>
