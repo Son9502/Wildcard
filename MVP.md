@@ -207,3 +207,33 @@ Kept from the README roadmap, deliberately deferred:
 - Rich text (bold, links, inline mentions), drag-and-drop reordering, deep page nesting, databases/table views
 - Real-time collaboration / sharing pages
 - Browser-extension quick capture
+- Semantic retrieval (RAG) and long-term agent memory: see §8
+
+---
+
+## 8. After the MVP: retrieval (RAG) and agent memory
+
+The first post-MVP AI work. In the MVP, `search_pages` is a plain keyword search, which is enough to ship. Retrieval upgrades it so the agent and personas find notes by meaning ("what did I decide about the exam?") and carry relevant history into a session, instead of only the current task and its page.
+
+### Steps
+
+Each step ships on its own and is measured against the one before.
+
+| # | Step | What changes | Done when |
+|---|---|---|---|
+| R1 | **Eval set first** | 20–30 real questions from a seeded demo account, each paired with the page(s) that should answer it | `search_pages` recall@5 is measured and recorded for the MVP keyword search |
+| R2 | **Embeddings in Postgres** | `pgvector` extension; a `block_embeddings` table (`block_id`, `user_id`, `embedding`, `content_hash`) with the same per-user RLS as `blocks`; a trigger queues changed blocks and an Edge Function embeds them. Candidate models: Supabase's built-in `gte-small` in Edge Functions (no extra key) or a hosted embedding API | Every block has a current embedding; deleting a block or account deletes its embeddings |
+| R3 | **Hybrid search** | `search_pages` combines Postgres full-text search with vector similarity (e.g. reciprocal rank fusion), filtered by RLS | Recall@5 beats R1's keyword baseline on the eval set |
+| R4 | **Grounded answers** | The agent answers questions about the workspace from retrieved blocks and cites the pages it used; with nothing relevant retrieved, it says so instead of guessing | Spot-checked answers cite real pages; no answer cites a page that doesn't contain the claim |
+| R5 | **Retrieval-based persona context and memory** | Hand-off context adds the most relevant past notes and sessions for the task, not just the latest few `event_log` rows. The rank-2 "memory" paragraph is built from retrieved past sessions instead of only recent ones | A persona session references a relevant note from weeks earlier that the old recency-only context would have missed |
+
+### Ground rules
+
+- **Same security model:** embeddings are private user data. They live behind the same RLS as the rows they come from, and every retrieval runs with the caller's JWT.
+- **Retrieval informs, tools act:** retrieved text is context only. It never triggers a tool call by itself; actions still go through the persona's permitted tool set.
+- **Measure, don't eyeball:** every retrieval change is judged against the R1 eval set, so improvements are numbers, not impressions.
+
+### Persona fit
+
+- **Hierophant (Research)** gets retrieval first: answers from your own pages, with citations.
+- **Justice (Rules / advisory)** uses R4's cite-or-decline behavior, which matches its "source citations, never rank-gated" design.
